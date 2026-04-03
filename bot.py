@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 
 # 🔒 নিরাপদ TOKEN (Railway ENV থেকে নিবে)
-TOKEN = os.getenv("8679209863:AAHO4hGM9dORaRbrKvT-r3_lQxl4UiRZUFk")
+TOKEN = os.getenv("8679209863:AAF9jQ4O3znZNaQGT5lGFMJLOuoux0FY9mc")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━
 # 🎨 MAIN MENU
