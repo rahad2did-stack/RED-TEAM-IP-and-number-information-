@@ -1,4 +1,4 @@
 python-telegram-bot==20.7
-phonenumbers
-requests
-pytz
+ipwhois==1.22.0
+phonenumbers==8.13.37
+requests==2.31.0
