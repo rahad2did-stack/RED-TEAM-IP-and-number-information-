@@ -1,186 +1,206 @@
+import logging
 import asyncio
+import ipaddress
+import re
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from ipwhois import IPWhois
 import phonenumbers
-from phonenumbers import geocoder, carrier, timezone
-import socket
+from phonenumbers import geocoder, carrier
 import requests
-from datetime import datetime
-import os
+from typing import Dict, List
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-    CallbackQueryHandler
-)
+# Configure logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# 🔒 নিরাপদ TOKEN (Railway ENV থেকে নিবে)
-TOKEN = os.getenv("8679209863:AAF9jQ4O3znZNaQGT5lGFMJLOuoux0FY9mc")
+# Bot token (replace with your actual token)
+BOT_TOKEN = "8679209863:AAF9jQ4O3znZNaQGT5lGFMJLOuoux0FY9mc"
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-# 🎨 MAIN MENU
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("🌐 IP Scanner", callback_data='ip_scan')],
-        [InlineKeyboardButton("📱 Number Scanner", callback_data='phone_scan')],
-        [InlineKeyboardButton("📢 Join Channel", url='https://t.me/REDX_64')],
-        [InlineKeyboardButton("❌ Exit", callback_data='exit')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+class PentestGeoBot:
+    def __init__(self):
+        self.country_codes = self.load_country_codes()
+    
+    def load_country_codes(self) -> Dict[str, List[str]]:
+        """Load country phone codes"""
+        return {
+            'US': ['+1', '1'],
+            'GB': ['+44', '44'],
+            'CA': ['+1', '1'], 
+            'AU': ['+61', '61'],
+            'DE': ['+49', '49'],
+            'FR': ['+33', '33'],
+            'IN': ['+91', '91'],
+            'RU': ['+7', '7'],
+            'BR': ['+55', '55'],
+            'JP': ['+81', '81'],
+            # Add more as needed
+        }
+    
+    async def ip_lookup(self, ip: str) -> Dict:
+        """Comprehensive IP geolocation lookup"""
+        result = {
+            'ip': ip,
+            'valid': False,
+            'country': 'Unknown',
+            'region': 'Unknown',
+            'city': 'Unknown',
+            'isp': 'Unknown',
+            'asn': 'Unknown',
+            'lat': None,
+            'lon': None,
+            'error': None
+        }
+        
+        try:
+            # Validate IP
+            ipaddress.ip_address(ip)
+            result['valid'] = True
+            
+            # WHOIS lookup
+            obj = IPWhois(ip)
+            whois_data = obj.lookup_whois()
+            
+            result['country'] = whois_data.get('country', 'Unknown')
+            result['region'] = whois_data.get('region', 'Unknown')
+            result['city'] = whois_data.get('city', 'Unknown')
+            result['isp'] = whois_data.get('nets', [{}])[0].get('name', 'Unknown')
+            result['asn'] = whois_data.get('asn', 'Unknown')
+            
+            # IP-API fallback for geo coords
+            try:
+                api_resp = requests.get(f'http://ip-api.com/json/{ip}', timeout=5).json()
+                if api_resp['status'] == 'success':
+                    result['lat'] = api_resp.get('lat')
+                    result['lon'] = api_resp.get('lon')
+            except:
+                pass
+                
+        except Exception as e:
+            result['error'] = str(e)
+            
+        return result
+    
+    def parse_phone(self, number: str) -> Dict:
+        """Parse phone number and extract country info"""
+        try:
+            parsed = phonenumbers.parse(number)
+            if phonenumbers.is_valid_number(parsed):
+                return {
+                    'number': phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.INTERNATIONAL),
+                    'country': geocoder.description_for_number(parsed, 'en'),
+                    'carrier': carrier.name_for_number(parsed, 'en'),
+                    'valid': True
+                }
+        except:
+            pass
+        return {'number': number, 'country': 'Invalid', 'carrier': 'Unknown', 'valid': False}
 
-    banner = """
-✨══════════════════════════════✨
-🔥 *RED-TEAM INFORMATION XSS* 🔥
-✨══════════════════════════════✨
+bot = PentestGeoBot()
 
-⚡ *ADVANCED INTELLIGENCE TOOL* ⚡
-
-🌐 IP Lookup  
-📱 Number Analysis  
-📊 Fast Results  
-
-━━━━━━━━━━━━━━━━━━━━━━  
-👨‍💻 *DEV:* CEO RAHAT  
-🔥 *TEAM:* RED-TEAM BD  
-━━━━━━━━━━━━━━━━━━━━━━  
-"""
-
-    if update.message:
-        await update.message.reply_text(banner, reply_markup=reply_markup, parse_mode='Markdown')
-    elif update.callback_query:
-        await update.callback_query.edit_message_text(banner, reply_markup=reply_markup, parse_mode='Markdown')
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-# 🌐 IP INFO
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-async def get_extended_ip_info(ip):
-    try:
-        url = f"http://ip-api.com/json/{ip}"
-        response = await asyncio.to_thread(requests.get, url)
-        data = response.json()
-
-        if data['status'] != 'success':
-            return "❌ Invalid IP"
-
-        return f"""
-🌐 *IP RESULT*: `{ip}`
-
-🌍 Country: {data.get('country')}
-🏙 City: {data.get('city')}
-📡 ISP: {data.get('isp')}
-🗺 Region: {data.get('regionName')}
-🕒 Timezone: {data.get('timezone')}
-📍 Location: {data.get('lat')}, {data.get('lon')}
-
-🔒 Proxy: {data.get('proxy')}
-📶 Mobile: {data.get('mobile')}
-
-📅 Scan: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-"""
-
-    except Exception as e:
-        return f"❌ Error: {e}"
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-# 📱 PHONE INFO
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-async def get_extended_phone_info(phone_number):
-    try:
-        parsed = phonenumbers.parse(phone_number)
-
-        if not phonenumbers.is_valid_number(parsed):
-            return "❌ Invalid Number"
-
-        return f"""
-📱 *NUMBER RESULT*
-
-📞 Number: {phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.INTERNATIONAL)}
-🌍 Country: {geocoder.description_for_number(parsed, "en")}
-📡 Carrier: {carrier.name_for_number(parsed, "en")}
-🕒 Timezone: {timezone.time_zones_for_number(parsed)}
-
-✅ Valid: Yes
-"""
-
-    except Exception as e:
-        return f"❌ Error: {e}"
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-# ▶️ START
-# ━━━━━━━━━━━━━━━━━━━━━━━━
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu(update, context)
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-# 🔘 BUTTON HANDLER
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == 'ip_scan':
-        await query.edit_message_text("🌐 Send IP:")
-        context.user_data['mode'] = 'ip'
-
-    elif query.data == 'phone_scan':
-        await query.edit_message_text("📱 Send Number (+880...):")
-        context.user_data['mode'] = 'phone'
-
-    elif query.data == 'exit':
-        await query.edit_message_text("👋 Bye!")
-
-    elif query.data == 'back':
-        await show_main_menu(update, context)
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-# ✏️ INPUT HANDLER
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    mode = context.user_data.get('mode')
-
-    if mode == 'ip':
-        result = await get_extended_ip_info(text)
-
-    elif mode == 'phone':
-        result = await get_extended_phone_info(text)
-
-    else:
-        await update.message.reply_text("⚠️ Select option first")
-        return
-
-    keyboard = [
-        [InlineKeyboardButton("🔙 Back", callback_data='back')]
-    ]
-
+    """Start command"""
     await update.message.reply_text(
-        result,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        "🔍 Pentest Geo Bot\n\n"
+        "Commands:\n"
+        "/ip <IP> - IP geolocation\n"
+        "/phone <number> - Phone country lookup\n"
+        "/countries - List country codes\n"
+        "Send IP or phone number directly"
     )
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-# ❌ ERROR
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(context.error)
+async def ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /ip command"""
+    if not context.args:
+        await update.message.reply_text("Usage: /ip 8.8.8.8")
+        return
+    
+    ip = context.args[0]
+    result = await bot.ip_lookup(ip)
+    await format_ip_response(update, result)
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-# 🚀 RUN
-# ━━━━━━━━━━━━━━━━━━━━━━━━
-def run_bot():
-    app = Application.builder().token(TOKEN).build()
+async def phone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /phone command"""
+    if not context.args:
+        await update.message.reply_text("Usage: /phone +1-555-123-4567")
+        return
+    
+    number = context.args[0]
+    result = bot.parse_phone(number)
+    await format_phone_response(update, result)
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle direct IP/phone inputs"""
+    text = update.message.text.strip()
+    
+    # Check if it's an IP
+    if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', text):
+        result = await bot.ip_lookup(text)
+        await format_ip_response(update, result)
+    
+    # Check if it's a phone number
+    elif re.match(r'^\+?\d[\d\s\-\(\)]{7,}$', text):
+        result = bot.parse_phone(text)
+        await format_phone_response(update, result)
+    
+    else:
+        await update.message.reply_text("Send a valid IP address or phone number")
+
+async def format_ip_response(update: Update, result: Dict):
+    """Format IP lookup response"""
+    text = f"🌐 IP Recon: {result['ip']}\n\n"
+    
+    if not result['valid']:
+        text += f"❌ Invalid IP: {result.get('error', 'Unknown error')}"
+    else:
+        text += (
+            f"📍 Country: {result['country']}\n"
+            f"🌆 Region: {result['region']}\n"
+            f"🏙️ City: {result['city']}\n"
+            f"🏢 ISP: {result['isp']}\n"
+            f"🔢 ASN: {result['asn']}\n"
+        )
+        
+        if result['lat'] and result['lon']:
+            text += f"📊 Lat/Lon: {result['lat']}, {result['lon']}"
+    
+    await update.message.reply_text(text)
+
+async def format_phone_response(update: Update, result: Dict):
+    """Format phone lookup response"""
+    text = f"📱 Phone Recon: {result['number']}\n\n"
+    
+    if result['valid']:
+        text += (
+            f"🌍 Country: {result['country']}\n"
+            f"📡 Carrier: {result['carrier']}\n"
+            f"✅ Valid number"
+        )
+    else:
+        text += "❌ Invalid phone number"
+    
+    await update.message.reply_text(text)
+
+async def countries_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List country codes"""
+    text = "🌍 Country Phone Codes:\n\n"
+    for country, codes in bot.country_codes.items():
+        text += f"{country}: {', '.join(codes)}\n"
+    await update.message.reply_text(text)
+
+def main():
+    """Start the bot"""
+    app = Application.builder().token(BOT_TOKEN).build()
+    
+    # Handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_error_handler(error_handler)
-
-    print("✅ BOT RUNNING...")
+    app.add_handler(CommandHandler("ip", ip_command))
+    app.add_handler(CommandHandler("phone", phone_command))
+    app.add_handler(CommandHandler("countries", countries_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("🚀 Pentest Geo Bot started...")
     app.run_polling()
 
-if __name__ == "__main__":
-    run_bot()
+if __name__ == '__main__':
+    main()
